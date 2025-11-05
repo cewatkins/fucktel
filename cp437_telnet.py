@@ -7,12 +7,15 @@ CP437 (Code Page 437) graphical characters, including low ASCII symbols
 that are typically lost in standard UTF-8 telnet.
 """
 
+import argparse
 import asyncio
 import codecs
 import sys
 import tty
 import termios
-from typing import Optional
+import time
+from datetime import datetime
+from typing import Optional, Dict
 
 import telnetlib3
 
@@ -246,9 +249,35 @@ def cp437_codec_info(name: str) -> codecs.CodecInfo:
 codecs.register(lambda name: cp437_codec_info(name) if name == "cp437_graphical" else None)
 
 
-async def graphical_shell(reader, writer):
+class SessionLogger:
+    """Logs telnet session to file."""
+    
+    def __init__(self, log_file: Optional[str] = None):
+        self.log_file = log_file
+        self.file_handle = None
+        
+        if log_file:
+            self.file_handle = open(log_file, 'w', encoding='utf-8')
+            self.log(f"=== Session started at {datetime.now().isoformat()} ===\n")
+    
+    def log(self, data: str):
+        """Write data to log file."""
+        if self.file_handle:
+            self.file_handle.write(data)
+            self.file_handle.flush()
+    
+    def close(self):
+        """Close the log file."""
+        if self.file_handle:
+            self.log(f"\n=== Session ended at {datetime.now().isoformat()} ===\n")
+            self.file_handle.close()
+
+
+async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None, macros: Optional[Dict[str, str]] = None):
     """Interactive shell with CP437 character support."""
     print("Connected! Type Ctrl+] to quit.\n")
+    if macros:
+        print("Macros available: F1-F4\n")
     
     # Save original terminal settings
     if sys.stdin.isatty():
@@ -258,6 +287,18 @@ async def graphical_shell(reader, writer):
     
     # Buffer for incomplete ANSI sequences between reads
     incomplete_seq = b''
+    
+    # Map F-key escape sequences to macro keys
+    # F1=ESC[11~, F2=ESC[12~, F3=ESC[13~, F4=ESC[14~
+    fkey_map = {
+        '\x1b[11~': 'f1',
+        '\x1b[12~': 'f2', 
+        '\x1b[13~': 'f3',
+        '\x1b[14~': 'f4',
+    }
+    
+    # Macro delay (configurable via global or args)
+    macro_delay = getattr(graphical_shell, 'macro_delay', 0.01)
     
     try:
         # Set terminal to raw mode for character-by-character input
@@ -289,6 +330,10 @@ async def graphical_shell(reader, writer):
                     decoded, incomplete_seq = decode_cp437_graphical_buffered(data_bytes)
                     sys.stdout.write(decoded)
                     sys.stdout.flush()
+                    
+                    # Log to file if logger is active
+                    if logger:
+                        logger.log(decoded)
             except asyncio.CancelledError:
                 pass
         
@@ -315,10 +360,7 @@ async def graphical_shell(reader, writer):
                         is_escape_sequence = False
                         
                         # Try to read the next character with a timeout
-                        # If we can read it quickly, it's likely part of an escape sequence
-                        # If timeout occurs, it's a standalone ESC key
                         try:
-                            # Use a short timeout (50ms) to detect if this is part of a sequence
                             next_char = await asyncio.wait_for(
                                 loop.run_in_executor(None, sys.stdin.read, 1),
                                 timeout=0.05
@@ -337,21 +379,38 @@ async def graphical_shell(reader, writer):
                                         if not term_char:
                                             break
                                         seq += term_char
-                                        # Check if this completes the sequence (letter in CSI range)
+                                        # Check if this completes the sequence
                                         if 0x40 <= ord(term_char) <= 0x7E:
                                             break
                                 else:
                                     # Other escape sequences (ESC O, ESC (, etc.)
                                     is_escape_sequence = True
                         except asyncio.TimeoutError:
-                            # Standalone ESC - send it to server
+                            # Standalone ESC
                             is_escape_sequence = False
                         
-                        # Send the sequence (or standalone ESC) to the server
-                        writer.write(seq)
+                        # Check if this is a macro F-key
+                        if seq in fkey_map and macros:
+                            macro_key = fkey_map[seq]
+                            if macro_key in macros:
+                                # Send macro text with delays between characters
+                                macro_text = macros[macro_key]
+                                for macro_char in macro_text:
+                                    writer.write(macro_char)
+                                    await asyncio.sleep(macro_delay)
+                                if logger:
+                                    logger.log(f"[MACRO {macro_key.upper()}]: {macro_text}\n")
+                            else:
+                                # Send the raw sequence
+                                writer.write(seq)
+                        else:
+                            # Send the sequence (or standalone ESC) to the server
+                            writer.write(seq)
                     else:
                         # Regular character - send to telnet server
                         writer.write(char)
+                        if logger:
+                            logger.log(char)
             except (EOFError, asyncio.CancelledError):
                 pass
         
@@ -379,32 +438,82 @@ async def graphical_shell(reader, writer):
         print("\nDisconnected.")
     
     finally:
+        # Close logger
+        if logger:
+            logger.close()
+        
         # Restore original terminal settings
         if old_settings:
             termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_settings)
 
 
-async def main(host: str, port: Optional[int] = 23):
+async def main(host: str, port: Optional[int] = 23, log_file: Optional[str] = None, macros: Optional[Dict[str, str]] = None, macro_delay: float = 0.01):
     """Connect to telnet host and run graphical shell."""
-    reader, writer = await telnetlib3.open_connection(
-        host,
-        port,
-        encoding='latin-1',  # 8-bit encoding
-        force_binary=True,
-    )
-    # Run the graphical shell after connection is established
-    await graphical_shell(reader, writer)
-    await writer.protocol.waiter_closed
+    # Store macro_delay as a class attribute for use in graphical_shell
+    graphical_shell.macro_delay = macro_delay
+    
+    # Create logger if requested
+    logger = SessionLogger(log_file) if log_file else None
+    
+    try:
+        reader, writer = await telnetlib3.open_connection(
+            host,
+            port,
+            encoding='latin-1',  # 8-bit encoding
+            force_binary=True,
+        )
+        # Run the graphical shell after connection is established
+        await graphical_shell(reader, writer, logger=logger, macros=macros)
+        await writer.protocol.waiter_closed
+    finally:
+        if logger:
+            logger.close()
 
 
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python3 cp437_telnet.py <host> [port]")
-        sys.exit(1)
-    host = sys.argv[1]
-    port = int(sys.argv[2]) if len(sys.argv) > 2 else 23
+    parser = argparse.ArgumentParser(
+        description="CP437 Telnet Client with full graphical character support"
+    )
+    parser.add_argument("host", help="Telnet host to connect to")
+    parser.add_argument("port", type=int, nargs="?", default=23, help="Telnet port (default: 23)")
+    parser.add_argument(
+        "-l", "--log",
+        dest="log_file",
+        help="Log session to file (use timestamp if not specified)"
+    )
+    parser.add_argument(
+        "--delay",
+        type=float,
+        default=0.01,
+        help="Delay between macro keystrokes in seconds (default: 0.01)"
+    )
+    
+    # Add macro arguments F1-F4
+    for fkey in ['f1', 'f2', 'f3', 'f4']:
+        parser.add_argument(
+            f"--{fkey}",
+            dest=fkey,
+            help=f"Macro text for {fkey.upper()} key"
+        )
+    
+    args = parser.parse_args()
+    
+    # Generate log filename if --log specified without value
+    log_file = args.log_file
+    if args.log_file == "":
+        # Create timestamped log file
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_file = f"session_{timestamp}.log"
+    
+    # Build macros dictionary
+    macros = {}
+    for fkey in ['f1', 'f2', 'f3', 'f4']:
+        macro_text = getattr(args, fkey, None)
+        if macro_text:
+            macros[fkey] = macro_text
+    
     try:
-        asyncio.run(main(host, port))
+        asyncio.run(main(args.host, args.port, log_file=log_file, macros=macros or None, macro_delay=args.delay))
     except KeyboardInterrupt:
         print("\nInterrupted by user.")
         sys.exit(0)
