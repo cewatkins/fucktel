@@ -310,21 +310,44 @@ async def graphical_shell(reader, writer):
                     
                     # Handle escape sequences from terminal (arrow keys, etc.)
                     if char == '\x1b':  # ESC - start of escape sequence
-                        # Read the next characters of the sequence
+                        # Read the next characters of the sequence with a short timeout
                         seq = char
-                        # For CSI sequences, expect format: ESC [ letter (and params in between)
-                        # Read until we get the terminating letter
-                        for _ in range(10):
-                            next_char = await loop.run_in_executor(None, sys.stdin.read, 1)
-                            if not next_char:
-                                break
-                            seq += next_char
-                            # Check if this completes the sequence (letter in CSI range)
-                            if len(seq) >= 3 and 0x40 <= ord(next_char) <= 0x7E:
-                                break
+                        is_escape_sequence = False
                         
-                        # Send the full escape sequence as-is to the server
-                        # (arrow keys, function keys, etc. will work properly)
+                        # Try to read the next character with a timeout
+                        # If we can read it quickly, it's likely part of an escape sequence
+                        # If timeout occurs, it's a standalone ESC key
+                        try:
+                            # Use a short timeout (50ms) to detect if this is part of a sequence
+                            next_char = await asyncio.wait_for(
+                                loop.run_in_executor(None, sys.stdin.read, 1),
+                                timeout=0.05
+                            )
+                            
+                            if next_char:
+                                seq += next_char
+                                # If it's CSI sequence (ESC[), read until terminator
+                                if next_char == '[':
+                                    is_escape_sequence = True
+                                    for _ in range(10):
+                                        term_char = await asyncio.wait_for(
+                                            loop.run_in_executor(None, sys.stdin.read, 1),
+                                            timeout=0.05
+                                        )
+                                        if not term_char:
+                                            break
+                                        seq += term_char
+                                        # Check if this completes the sequence (letter in CSI range)
+                                        if 0x40 <= ord(term_char) <= 0x7E:
+                                            break
+                                else:
+                                    # Other escape sequences (ESC O, ESC (, etc.)
+                                    is_escape_sequence = True
+                        except asyncio.TimeoutError:
+                            # Standalone ESC - send it to server
+                            is_escape_sequence = False
+                        
+                        # Send the sequence (or standalone ESC) to the server
                         writer.write(seq)
                     else:
                         # Regular character - send to telnet server
