@@ -1,0 +1,390 @@
+#!/usr/bin/env python3
+"""
+CP437 Telnet Client - Telnetlib3 client with CP437 graphical support.
+
+This module provides a telnet client that properly decodes and displays
+CP437 (Code Page 437) graphical characters, including low ASCII symbols
+that are typically lost in standard UTF-8 telnet.
+"""
+
+import asyncio
+import codecs
+import sys
+import tty
+import termios
+from typing import Optional
+
+import telnetlib3
+
+# Dynamically build CP437 graphical map (standard + low symbol overrides)
+raw = bytes(range(256))
+standard_decoded = raw.decode("cp437")
+# Only override printable graphical characters from low ASCII range
+# Include ALL low ASCII characters that have graphical representations in CP437
+graphical_low = {
+    0x01: "\u263a",  # ☺
+    0x02: "\u263b",  # ☻
+    0x03: "\u2665",  # ♥
+    0x04: "\u2666",  # ♦
+    0x05: "\u2663",  # ♣
+    0x06: "\u2660",  # ♠
+    0x07: "\u2022",  # •
+    # 0x08: BS - keep as-is (backspace control)
+    # 0x09: TAB - keep as-is (tab control)
+    # 0x0A: LF - keep as-is (line feed control)
+    0x0B: "\u2642",  # ♂
+    0x0C: "\u2640",  # ♀
+    # 0x0D: CR - keep as-is (carriage return control)
+    0x0E: "\u25ba",  # ►
+    0x0F: "\u25c4",  # ◄
+    0x10: "\u2195",  # ↕
+    0x11: "\u203c",  # ‼
+    0x12: "\u00b6",  # ¶
+    0x13: "\u00a7",  # §
+    0x14: "\u25ac",  # ▬
+    0x15: "\u21a8",  # ↨
+    0x16: "\u2191",  # ↑
+    0x17: "\u2193",  # ↓
+    0x18: "\u2192",  # →
+    0x19: "\u2190",  # ←
+    0x1A: "\u221f",  # ∟
+    0x1B: "\u2194",  # ↔
+    0x1C: "\u25b2",  # ▲
+    0x1D: "\u25bc",  # ▼
+    0x1E: "\u2320",  # ⌠
+    0x1F: "\u2321",  # ⌡
+    0x7F: "\u2302",  # ⌂
+}
+
+CP437_MAP = {}
+for i in range(256):
+    if i in graphical_low:
+        CP437_MAP[i] = graphical_low[i]
+    else:
+        CP437_MAP[i] = standard_decoded[i]
+
+# Inverse map for encoding (Unicode to CP437; first match wins)
+UNICODE_TO_CP437 = {}
+for k, v in CP437_MAP.items():
+    if v not in UNICODE_TO_CP437:
+        UNICODE_TO_CP437[v] = k
+
+
+def decode_cp437_graphical(data: bytes) -> str:
+    """Custom decoder: Maps CP437 bytes to graphical Unicode, preserving ANSI codes."""
+    result, _ = decode_cp437_graphical_buffered(data)
+    return result
+
+
+def decode_cp437_graphical_buffered(data: bytes) -> tuple:
+    """
+    Custom decoder: Maps CP437 bytes to graphical Unicode, preserving ANSI codes.
+    Returns (decoded_string, incomplete_sequence_bytes).
+    Incomplete sequences are returned for buffering across read boundaries.
+    """
+    result = []
+    incomplete = b''
+    i = 0
+    
+    while i < len(data):
+        byte = data[i]
+        
+        # Check for ANSI escape sequence FIRST (ESC = 0x1B)
+        # This must be checked BEFORE we map 0x1B to a character
+        if byte == 0x1B:
+            # We found the start of a potential escape sequence
+            # Check if we have enough data to complete it
+            remaining = data[i:]
+            
+            if len(remaining) < 2:
+                # Not enough data - buffer this for next read
+                incomplete = remaining
+                break
+            
+            found_sequence = False
+            
+            # Check for CSI sequence (ESC [)
+            if remaining[1:2] == b'[':
+                # Start of ANSI CSI sequence: ESC [
+                # Find the end (letter in range @-~)
+                j = 2
+                found_terminator = False
+                while j < len(remaining) and j < 100:
+                    if 0x40 <= remaining[j] <= 0x7E:
+                        found_terminator = True
+                        break
+                    j += 1
+                
+                if found_terminator:
+                    # Complete sequence found
+                    seq = remaining[0:j+1]
+                    result.append(seq.decode('latin-1', errors='replace'))
+                    i += j + 1
+                    found_sequence = True
+                else:
+                    # Incomplete CSI sequence
+                    if j >= 100:
+                        # Sequence is too long, assume it's malformed and skip ESC
+                        result.append(CP437_MAP.get(byte, '?'))
+                        i += 1
+                    else:
+                        # Not enough data - buffer it
+                        incomplete = remaining
+                        break
+            
+            # Check for OSC sequences: ESC ] ... (terminated by BEL or ESC \)
+            elif len(remaining) > 1 and remaining[1:2] == b']':
+                j = 2
+                found_terminator = False
+                while j < len(remaining) and j < 200:
+                    if remaining[j:j+1] == b'\x07':  # BEL terminator
+                        result.append(remaining[0:j+1].decode('latin-1', errors='replace'))
+                        i += j + 1
+                        found_sequence = True
+                        found_terminator = True
+                        break
+                    elif remaining[j:j+2] == b'\x1b\\':  # ESC \ terminator
+                        result.append(remaining[0:j+2].decode('latin-1', errors='replace'))
+                        i += j + 2
+                        found_sequence = True
+                        found_terminator = True
+                        break
+                    j += 1
+                
+                if not found_terminator:
+                    if j >= 200:
+                        # Sequence too long, skip ESC
+                        result.append(CP437_MAP.get(byte, '?'))
+                        i += 1
+                    else:
+                        # Not enough data - buffer it
+                        incomplete = remaining
+                        break
+            
+            # Check for character set sequences: ESC ( or ESC ) or ESC * or ESC +
+            elif len(remaining) > 2 and remaining[1:2] in (b'(', b')', b'*', b'+'):
+                if remaining[2:3] in b'0ABU':
+                    result.append(remaining[0:3].decode('latin-1', errors='replace'))
+                    i += 3
+                    found_sequence = True
+                else:
+                    # Invalid charset sequence, skip ESC
+                    result.append(CP437_MAP.get(byte, '?'))
+                    i += 1
+            
+            # If we get here, ESC is not part of a recognized sequence
+            if not found_sequence:
+                # Check if we might be at the start of something incomplete
+                if len(remaining) > 1 and remaining[1:2] in b'([)*+':
+                    # Could be a charset sequence but incomplete
+                    if len(remaining) < 3:
+                        incomplete = remaining
+                        break
+                
+                # Not a recognized sequence pattern, map ESC as CP437
+                result.append(CP437_MAP.get(byte, '?'))
+                i += 1
+        
+        elif byte in CP437_MAP:
+            # Regular CP437 byte - decode using our map
+            result.append(CP437_MAP[byte])
+            i += 1
+        else:
+            # Unknown byte - use ? as fallback
+            result.append('?')
+            i += 1
+    
+    return "".join(result), incomplete
+
+
+def encode_to_cp437(text: str) -> bytes:
+    """Encode UTF-8 input back to CP437 (inverse map; latin-1 fallback)."""
+    result = bytearray()
+    for char in text:
+        if char in UNICODE_TO_CP437:
+            result.append(UNICODE_TO_CP437[char])
+        else:
+            try:
+                result.append(char.encode("latin-1")[0])
+            except Exception:
+                result.append(ord("?"))  # Safe fallback
+    return bytes(result)
+
+
+# Register custom CP437 codec
+class CP437Codec(codecs.Codec):
+    """Custom CP437 codec that preserves graphical characters."""
+
+    def encode(self, input_str: str, errors: str = "strict") -> tuple:
+        return encode_to_cp437(input_str), len(input_str)
+
+    def decode(self, input_bytes: bytes, errors: str = "strict") -> tuple:
+        return decode_cp437_graphical(input_bytes), len(input_bytes)
+
+
+class CP437IncrementalEncoder(codecs.IncrementalEncoder):
+    def encode(self, input_str: str, final: bool = False) -> str:
+        return encode_to_cp437(input_str).decode("latin-1", errors="replace")
+
+
+class CP437IncrementalDecoder(codecs.IncrementalDecoder):
+    def decode(self, input_bytes: bytes, final: bool = False) -> str:
+        return decode_cp437_graphical(input_bytes)
+
+
+def cp437_codec_info(name: str) -> codecs.CodecInfo:
+    return codecs.CodecInfo(
+        name="cp437_graphical",
+        encode=CP437Codec().encode,
+        decode=CP437Codec().decode,
+        incrementalencoder=CP437IncrementalEncoder,
+        incrementaldecoder=CP437IncrementalDecoder,
+    )
+
+
+# Register the codec
+codecs.register(lambda name: cp437_codec_info(name) if name == "cp437_graphical" else None)
+
+
+async def graphical_shell(reader, writer):
+    """Interactive shell with CP437 character support."""
+    print("Connected! Type Ctrl+] to quit.\n")
+    
+    # Save original terminal settings
+    if sys.stdin.isatty():
+        old_settings = termios.tcgetattr(sys.stdin.fileno())
+    else:
+        old_settings = None
+    
+    # Buffer for incomplete ANSI sequences between reads
+    incomplete_seq = b''
+    
+    try:
+        # Set terminal to raw mode for character-by-character input
+        if old_settings:
+            tty.setraw(sys.stdin.fileno())
+        
+        async def server_reader():
+            """Continuously read and display server output."""
+            nonlocal incomplete_seq
+            try:
+                while True:
+                    data = await reader.read(4096)
+                    if not data:
+                        return
+                    
+                    # Data comes as string (latin-1 decoded by telnetlib3)
+                    # Convert back to bytes to decode as CP437
+                    if isinstance(data, str):
+                        data_bytes = data.encode('latin-1', errors='replace')
+                    else:
+                        data_bytes = data
+                    
+                    # Prepend any incomplete sequence from previous read
+                    if incomplete_seq:
+                        data_bytes = incomplete_seq + data_bytes
+                        incomplete_seq = b''
+                    
+                    # Decode CP437 - will return incomplete_seq if needed
+                    decoded, incomplete_seq = decode_cp437_graphical_buffered(data_bytes)
+                    sys.stdout.write(decoded)
+                    sys.stdout.flush()
+            except asyncio.CancelledError:
+                pass
+        
+        async def stdin_reader():
+            """Continuously read user input from stdin (character-by-character)."""
+            try:
+                loop = asyncio.get_event_loop()
+                escape_char = "\x1d"  # Ctrl+]
+                
+                while True:
+                    # Read one character at a time
+                    char = await loop.run_in_executor(None, sys.stdin.read, 1)
+                    if not char:
+                        return
+                    
+                    # Check for escape character (Ctrl+])
+                    if char == escape_char:
+                        return
+                    
+                    # Handle escape sequences from terminal (arrow keys, etc.)
+                    if char == '\x1b':  # ESC - start of escape sequence
+                        # Read the next characters of the sequence
+                        seq = char
+                        # For CSI sequences, expect format: ESC [ letter (and params in between)
+                        # Read until we get the terminating letter
+                        for _ in range(10):
+                            next_char = await loop.run_in_executor(None, sys.stdin.read, 1)
+                            if not next_char:
+                                break
+                            seq += next_char
+                            # Check if this completes the sequence (letter in CSI range)
+                            if len(seq) >= 3 and 0x40 <= ord(next_char) <= 0x7E:
+                                break
+                        
+                        # Send the full escape sequence as-is to the server
+                        # (arrow keys, function keys, etc. will work properly)
+                        writer.write(seq)
+                    else:
+                        # Regular character - send to telnet server
+                        writer.write(char)
+            except (EOFError, asyncio.CancelledError):
+                pass
+        
+        # Create and run both tasks concurrently
+        server_task = asyncio.create_task(server_reader())
+        stdin_task = asyncio.create_task(stdin_reader())
+        
+        try:
+            # Wait for either task to complete
+            done, pending = await asyncio.wait(
+                [server_task, stdin_task],
+                return_when=asyncio.FIRST_COMPLETED
+            )
+            
+            # Cancel pending tasks
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+        except Exception:
+            pass
+        
+        print("\nDisconnected.")
+    
+    finally:
+        # Restore original terminal settings
+        if old_settings:
+            termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_settings)
+
+
+async def main(host: str, port: Optional[int] = 23):
+    """Connect to telnet host and run graphical shell."""
+    reader, writer = await telnetlib3.open_connection(
+        host,
+        port,
+        encoding='latin-1',  # 8-bit encoding
+        force_binary=True,
+    )
+    # Run the graphical shell after connection is established
+    await graphical_shell(reader, writer)
+    await writer.protocol.waiter_closed
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 2:
+        print("Usage: python3 cp437_telnet.py <host> [port]")
+        sys.exit(1)
+    host = sys.argv[1]
+    port = int(sys.argv[2]) if len(sys.argv) > 2 else 23
+    try:
+        asyncio.run(main(host, port))
+    except KeyboardInterrupt:
+        print("\nInterrupted by user.")
+        sys.exit(0)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
