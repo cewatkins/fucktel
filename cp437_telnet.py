@@ -273,11 +273,11 @@ class SessionLogger:
             self.file_handle.close()
 
 
-async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None, macros: Optional[Dict[str, str]] = None):
+async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None, bell_macro: Optional[str] = None):
     """Interactive shell with CP437 character support."""
     print("Connected! Type Ctrl+] to quit.\n")
-    if macros:
-        print("Macros available: F1-F4\n")
+    if bell_macro:
+        print("Bell macro available: Press Ctrl+G\n")
     
     # Save original terminal settings
     if sys.stdin.isatty():
@@ -287,15 +287,6 @@ async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None
     
     # Buffer for incomplete ANSI sequences between reads
     incomplete_seq = b''
-    
-    # Map F-key escape sequences to macro keys
-    # F1=ESC[11~, F2=ESC[12~, F3=ESC[13~, F4=ESC[14~
-    fkey_map = {
-        '\x1b[11~': 'f1',
-        '\x1b[12~': 'f2', 
-        '\x1b[13~': 'f3',
-        '\x1b[14~': 'f4',
-    }
     
     # Macro delay (configurable via global or args)
     macro_delay = getattr(graphical_shell, 'macro_delay', 0.01)
@@ -342,6 +333,7 @@ async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None
             try:
                 loop = asyncio.get_event_loop()
                 escape_char = "\x1d"  # Ctrl+]
+                bell_char = "\x07"    # Ctrl+G (BEL)
                 
                 while True:
                     # Read one character at a time
@@ -353,8 +345,17 @@ async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None
                     if char == escape_char:
                         return
                     
+                    # Check for bell macro trigger (Ctrl+G)
+                    if char == bell_char and bell_macro:
+                        # Send Ctrl+G first, then macro text with delays
+                        writer.write(bell_char)
+                        for macro_char in bell_macro:
+                            writer.write(macro_char)
+                            await asyncio.sleep(macro_delay)
+                        if logger:
+                            logger.log(f"[BELL MACRO]: {bell_macro}\n")
                     # Handle escape sequences from terminal (arrow keys, etc.)
-                    if char == '\x1b':  # ESC - start of escape sequence
+                    elif char == '\x1b':  # ESC - start of escape sequence
                         # Read the next characters of the sequence with a short timeout
                         seq = char
                         is_escape_sequence = False
@@ -389,23 +390,8 @@ async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None
                             # Standalone ESC
                             is_escape_sequence = False
                         
-                        # Check if this is a macro F-key
-                        if seq in fkey_map and macros:
-                            macro_key = fkey_map[seq]
-                            if macro_key in macros:
-                                # Send macro text with delays between characters
-                                macro_text = macros[macro_key]
-                                for macro_char in macro_text:
-                                    writer.write(macro_char)
-                                    await asyncio.sleep(macro_delay)
-                                if logger:
-                                    logger.log(f"[MACRO {macro_key.upper()}]: {macro_text}\n")
-                            else:
-                                # Send the raw sequence
-                                writer.write(seq)
-                        else:
-                            # Send the sequence (or standalone ESC) to the server
-                            writer.write(seq)
+                        # Send the sequence (or standalone ESC) to the server
+                        writer.write(seq)
                     else:
                         # Regular character - send to telnet server
                         writer.write(char)
@@ -447,7 +433,7 @@ async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None
             termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_settings)
 
 
-async def main(host: str, port: Optional[int] = 23, log_file: Optional[str] = None, macros: Optional[Dict[str, str]] = None, macro_delay: float = 0.01):
+async def main(host: str, port: Optional[int] = 23, log_file: Optional[str] = None, bell_macro: Optional[str] = None, macro_delay: float = 0.01):
     """Connect to telnet host and run graphical shell."""
     # Store macro_delay as a class attribute for use in graphical_shell
     graphical_shell.macro_delay = macro_delay
@@ -463,7 +449,7 @@ async def main(host: str, port: Optional[int] = 23, log_file: Optional[str] = No
             force_binary=True,
         )
         # Run the graphical shell after connection is established
-        await graphical_shell(reader, writer, logger=logger, macros=macros)
+        await graphical_shell(reader, writer, logger=logger, bell_macro=bell_macro)
         await writer.protocol.waiter_closed
     finally:
         if logger:
@@ -482,19 +468,16 @@ if __name__ == "__main__":
         help="Log session to file (use timestamp if not specified)"
     )
     parser.add_argument(
+        "--bell",
+        dest="bell_macro",
+        help="Macro text to send when Ctrl+G is pressed (sends Ctrl+G first, then text)"
+    )
+    parser.add_argument(
         "--delay",
         type=float,
         default=0.01,
         help="Delay between macro keystrokes in seconds (default: 0.01)"
     )
-    
-    # Add macro arguments F1-F4
-    for fkey in ['f1', 'f2', 'f3', 'f4']:
-        parser.add_argument(
-            f"--{fkey}",
-            dest=fkey,
-            help=f"Macro text for {fkey.upper()} key"
-        )
     
     args = parser.parse_args()
     
@@ -505,15 +488,8 @@ if __name__ == "__main__":
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         log_file = f"session_{timestamp}.log"
     
-    # Build macros dictionary
-    macros = {}
-    for fkey in ['f1', 'f2', 'f3', 'f4']:
-        macro_text = getattr(args, fkey, None)
-        if macro_text:
-            macros[fkey] = macro_text
-    
     try:
-        asyncio.run(main(args.host, args.port, log_file=log_file, macros=macros or None, macro_delay=args.delay))
+        asyncio.run(main(args.host, args.port, log_file=log_file, bell_macro=args.bell_macro, macro_delay=args.delay))
     except KeyboardInterrupt:
         print("\nInterrupted by user.")
         sys.exit(0)
