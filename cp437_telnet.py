@@ -273,6 +273,34 @@ class SessionLogger:
             self.file_handle.close()
 
 
+def parse_macro_keys(macro_text: str) -> list:
+    """
+    Parse macro text converting vim-style keys to escape sequences.
+    - h -> left arrow (ESC[D)
+    - j -> down arrow (ESC[B)
+    - k -> up arrow (ESC[A)
+    - l -> right arrow (ESC[C)
+    All other characters passed through as-is.
+    
+    Returns list of strings/characters to send.
+    """
+    key_map = {
+        'h': '\x1b[D',  # left arrow
+        'j': '\x1b[B',  # down arrow
+        'k': '\x1b[A',  # up arrow
+        'l': '\x1b[C',  # right arrow
+    }
+    
+    result = []
+    for char in macro_text:
+        if char in key_map:
+            result.append(key_map[char])
+        else:
+            result.append(char)
+    
+    return result
+
+
 async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None, bell_macro: Optional[str] = None):
     """Interactive shell with CP437 character support."""
     print("Connected! Type Ctrl+] to quit.\n")
@@ -347,10 +375,13 @@ async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None
                     
                     # Check for bell macro trigger (Ctrl+G)
                     if char == bell_char and bell_macro:
+                        # Parse macro to handle arrow keys (hjkl -> arrow sequences)
+                        macro_keys = parse_macro_keys(bell_macro)
+                        
                         # Send Ctrl+G first, then macro text with delays
                         writer.write(bell_char)
-                        for macro_char in bell_macro:
-                            writer.write(macro_char)
+                        for key in macro_keys:
+                            writer.write(key)
                             await asyncio.sleep(macro_delay)
                         if logger:
                             logger.log(f"[BELL MACRO]: {bell_macro}\n")
@@ -470,7 +501,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--bell",
         dest="bell_macro",
-        help="Macro text to send when Ctrl+G is pressed (sends Ctrl+G first, then text)"
+        help="Macro text to send when Ctrl+G is pressed (sends Ctrl+G first, then text). Use h/j/k/l for left/down/up/right arrows"
     )
     parser.add_argument(
         "--delay",
