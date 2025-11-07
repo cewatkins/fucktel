@@ -526,12 +526,20 @@ async def main(host: str, port: Optional[int] = 23, log_file: Optional[str] = No
         # Wait longer for server to process size and settle before we start displaying
         await asyncio.sleep(0.8)
         
-        # Drain any buffered data that arrived during negotiation
-        # This clears the initial screen junk so the first real content aligns properly
+        # Clear telnetlib3's internal buffers to prevent negotiation data from appearing
+        try:
+            # telnetlib3 buffers data in the protocol object
+            if hasattr(writer.protocol, '_stream'):
+                # Try to clear the internal stream buffer
+                writer.protocol._stream._buffer.clear()
+        except Exception:
+            pass
+        
+        # Drain any remaining buffered data
         drained_count = 0
         try:
             while drained_count < 10:  # Max 10 reads to prevent infinite loop
-                data = await asyncio.wait_for(reader.read(4096), timeout=0.1)
+                data = await asyncio.wait_for(reader.read(4096), timeout=0.05)
                 if not data:
                     break
                 drained_count += 1
