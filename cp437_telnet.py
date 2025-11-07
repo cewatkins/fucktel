@@ -19,6 +19,24 @@ from typing import Optional, Dict
 
 import telnetlib3
 
+# Patch telnetlib3 TTYPE handler to prevent crashes on problematic servers
+# Some servers send malformed TTYPE subnegotiations that cause AssertionErrors
+try:
+    from telnetlib3.stream_writer import StreamWriter
+    _original_handle_sb_ttype = StreamWriter._handle_sb_ttype
+    
+    def _patched_handle_sb_ttype(self, buf):
+        """Handle TTYPE subnegotiation without crashing."""
+        try:
+            if self.server:
+                self.send_subnegotiation(24, b"ANSI")  # TTYPE 24, type "ANSI"
+        except Exception:
+            pass  # Silently ignore TTYPE errors
+    
+    StreamWriter._handle_sb_ttype = _patched_handle_sb_ttype
+except Exception:
+    pass  # If we can't patch, continue anyway
+
 # Dynamically build CP437 graphical map (standard + low symbol overrides)
 raw = bytes(range(256))
 standard_decoded = raw.decode("cp437")
@@ -359,6 +377,10 @@ async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None
                     # Log to file if logger is active
                     if logger:
                         logger.log(decoded)
+                    
+                    # Small delay to allow more data to arrive in next read
+                    # This helps keep related lines together
+                    await asyncio.sleep(0.001)
             except asyncio.CancelledError:
                 pass
         
@@ -492,6 +514,7 @@ async def main(host: str, port: Optional[int] = 23, log_file: Optional[str] = No
         except Exception:
             pass
         
+        # Disable TTYPE negotiation to avoid crashes on some servers
         reader, writer = await telnetlib3.open_connection(
             host,
             port,
