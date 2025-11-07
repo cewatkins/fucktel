@@ -497,15 +497,19 @@ async def main(host: str, port: Optional[int] = 23, log_file: Optional[str] = No
     logger = SessionLogger(log_file) if log_file else None
     
     try:
-        # Get actual terminal size if available
-        try:
-            import shutil
-            term_size = shutil.get_terminal_size((cols, rows))
-            cols, rows = term_size.columns, term_size.lines
-            graphical_shell.term_cols = cols
-            graphical_shell.term_rows = rows
-        except Exception:
-            pass
+        # Get actual terminal size only if defaults were used (not explicitly specified)
+        # If user specified --cols or --rows, respect those values
+        import sys
+        if '--cols' not in sys.argv and '--rows' not in sys.argv:
+            try:
+                import shutil
+                term_size = shutil.get_terminal_size((cols, rows))
+                cols, rows = term_size.columns, term_size.lines
+            except Exception:
+                pass
+        
+        graphical_shell.term_cols = cols
+        graphical_shell.term_rows = rows
         
         # Disable TTYPE negotiation to avoid crashes on some servers
         reader, writer = await telnetlib3.open_connection(
@@ -545,6 +549,14 @@ async def main(host: str, port: Optional[int] = 23, log_file: Optional[str] = No
                 drained_count += 1
         except asyncio.TimeoutError:
             pass  # Expected - no more data
+        
+        # Clear the screen to wipe any negotiation artifacts before starting the shell
+        try:
+            sys.stdout.write('\x1b[2J')  # Clear screen
+            sys.stdout.write('\x1b[H')   # Home cursor
+            sys.stdout.flush()
+        except Exception:
+            pass
         
         # Run the graphical shell after connection is established
         await graphical_shell(reader, writer, logger=logger, bell_macro=bell_macro)
