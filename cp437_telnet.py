@@ -348,6 +348,7 @@ async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None
                     # Decode CP437 - will return incomplete_seq if needed
                     decoded, incomplete_seq = decode_cp437_graphical_buffered(data_bytes)
                     sys.stdout.write(decoded)
+                    # Force immediate flush after every write to prevent buffering issues
                     sys.stdout.flush()
                     
                     # Log to file if logger is active
@@ -426,8 +427,9 @@ async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None
                     else:
                         # Regular character - send to telnet server
                         writer.write(char)
-                        if logger:
-                            logger.log(char)
+                        # DON'T log or display what we send - let server echo handle it
+                        # if logger:
+                        #     logger.log(char)
             except (EOFError, asyncio.CancelledError):
                 pass
         
@@ -478,7 +480,16 @@ async def main(host: str, port: Optional[int] = 23, log_file: Optional[str] = No
             port,
             encoding='latin-1',  # 8-bit encoding
             force_binary=True,
+            shell=False,  # Disable shell mode
+            connect_minwait=0.0,  # Don't wait for telnet negotiation
         )
+        
+        # Request binary mode explicitly if available
+        try:
+            await writer.protocol.renegotiate() if hasattr(writer.protocol, 'renegotiate') else None
+        except Exception:
+            pass
+        
         # Run the graphical shell after connection is established
         await graphical_shell(reader, writer, logger=logger, bell_macro=bell_macro)
         await writer.protocol.waiter_closed
