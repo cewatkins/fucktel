@@ -319,6 +319,10 @@ async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None
     # Macro delay (configurable via global or args)
     macro_delay = getattr(graphical_shell, 'macro_delay', 0.01)
     
+    # Get terminal size info if available
+    term_cols = getattr(graphical_shell, 'term_cols', 80)
+    term_rows = getattr(graphical_shell, 'term_rows', 24)
+    
     try:
         # Set terminal to raw mode for character-by-character input
         if old_settings:
@@ -470,6 +474,8 @@ async def main(host: str, port: Optional[int] = 23, log_file: Optional[str] = No
     """Connect to telnet host and run graphical shell."""
     # Store macro_delay as a class attribute for use in graphical_shell
     graphical_shell.macro_delay = macro_delay
+    graphical_shell.term_cols = cols
+    graphical_shell.term_rows = rows
     
     # Create logger if requested
     logger = SessionLogger(log_file) if log_file else None
@@ -480,6 +486,8 @@ async def main(host: str, port: Optional[int] = 23, log_file: Optional[str] = No
             import shutil
             term_size = shutil.get_terminal_size((cols, rows))
             cols, rows = term_size.columns, term_size.lines
+            graphical_shell.term_cols = cols
+            graphical_shell.term_rows = rows
         except Exception:
             pass
         
@@ -491,11 +499,12 @@ async def main(host: str, port: Optional[int] = 23, log_file: Optional[str] = No
             connect_minwait=0.0,  # Don't wait for telnet negotiation
         )
         
-        # Force terminal size to server after connection
-        # Send NAWS (Negotiate About Window Size) telnet option
+        # Send terminal size IMMEDIATELY and wait a moment for negotiation
         try:
             if hasattr(writer.protocol, 'request_naws'):
                 await writer.protocol.request_naws(cols, rows)
+            # Give server time to process size negotiation before we start reading
+            await asyncio.sleep(0.1)
         except Exception:
             pass
         
