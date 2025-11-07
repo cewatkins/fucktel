@@ -375,9 +375,14 @@ async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None
                     if logger:
                         logger.log(decoded)
                     
-                    # Small delay to allow more data to arrive in next read
-                    # This helps keep related lines together
-                    await asyncio.sleep(0.001)
+                    # If we sent a clear screen (ESC[2J) or similar control, add small delay
+                    # to let server finish sending the next frame before we read again
+                    if b'\x1b[2J' in data_bytes or b'\x1b[H' in data_bytes or b'\x1b[0;0H' in data_bytes:
+                        await asyncio.sleep(0.05)
+                    else:
+                        # Small delay to allow more data to arrive in next read
+                        # This helps keep related lines together
+                        await asyncio.sleep(0.001)
             except asyncio.CancelledError:
                 pass
         
@@ -520,32 +525,34 @@ async def main(host: str, port: Optional[int] = 23, log_file: Optional[str] = No
             connect_minwait=0.0,  # Don't wait for telnet negotiation
         )
         
-        # Wait for telnet negotiation to settle
-        await asyncio.sleep(0.3)
-        
-        # Drain any buffered telnet negotiation data that shouldn't be displayed
-        # This prevents terminal detection sequences from shifting output
-        drained = b""
-        try:
-            while True:
-                data = await asyncio.wait_for(reader.read(4096), timeout=0.05)
-                if not data:
-                    break
-                if isinstance(data, str):
-                    drained += data.encode('latin-1', errors='replace')
-                else:
-                    drained += data
-        except asyncio.TimeoutError:
-            pass  # Expected - no more data in buffer
-        
-        # Send terminal size AFTER draining negotiation junk
+        # Send terminal size FIRST thing
         try:
             if hasattr(writer.protocol, 'request_naws'):
                 await writer.protocol.request_naws(cols, rows)
-            # Give server time to process size
-            await asyncio.sleep(0.1)
         except Exception:
             pass
+        
+        # Wait long enough for server to process size and settle
+        await asyncio.sleep(0.5)
+        
+        # Drain any buffered data that arrived during negotiation
+        # Read with increasingly longer timeouts to catch straggler packets
+        drained = b""
+        for timeout_val in [0.2, 0.1, 0.05]:
+            try:
+                while True:
+                    data = await asyncio.wait_for(reader.read(4096), timeout=timeout_val)
+                    if not data:
+                        break
+                    if isinstance(data, str):
+                        drained += data.encode('latin-1', errors='replace')
+                    else:
+                        drained += data
+            except asyncio.TimeoutError:
+                pass  # Expected - move to next timeout level
+        
+        # Final longer wait before showing shell
+        await asyncio.sleep(0.2)
         
         # Run the graphical shell after connection is established
         await graphical_shell(reader, writer, logger=logger, bell_macro=bell_macro)
