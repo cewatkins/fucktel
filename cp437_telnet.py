@@ -344,18 +344,6 @@ async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None
         if old_settings:
             tty.setraw(sys.stdin.fileno())
         
-        # Send terminal control codes to prevent scrolling issues
-        # ESC[?25h = Show cursor
-        # ESC[?1049h = Use alternate screen buffer (some terminals)
-        # ESC7 = Save cursor position
-        # ESC[r = Reset scroll region to full screen
-        try:
-            sys.stdout.write('\x1b[?25h')  # Show cursor
-            sys.stdout.write('\x1b[r')      # Reset scroll region
-            sys.stdout.flush()
-        except Exception:
-            pass
-        
         async def server_reader():
             """Continuously read and display server output."""
             nonlocal incomplete_seq
@@ -535,27 +523,18 @@ async def main(host: str, port: Optional[int] = 23, log_file: Optional[str] = No
         except Exception:
             pass
         
-        # Wait long enough for server to process size and settle
-        await asyncio.sleep(0.5)
+        # Wait for server to process size and settle
+        await asyncio.sleep(0.2)
         
         # Drain any buffered data that arrived during negotiation
-        # Read with increasingly longer timeouts to catch straggler packets
-        drained = b""
-        for timeout_val in [0.2, 0.1, 0.05]:
-            try:
-                while True:
-                    data = await asyncio.wait_for(reader.read(4096), timeout=timeout_val)
-                    if not data:
-                        break
-                    if isinstance(data, str):
-                        drained += data.encode('latin-1', errors='replace')
-                    else:
-                        drained += data
-            except asyncio.TimeoutError:
-                pass  # Expected - move to next timeout level
-        
-        # Final longer wait before showing shell
-        await asyncio.sleep(0.2)
+        # Just do one quick drain to clear any junk
+        try:
+            while True:
+                data = await asyncio.wait_for(reader.read(4096), timeout=0.05)
+                if not data:
+                    break
+        except asyncio.TimeoutError:
+            pass  # Expected - no more data
         
         # Run the graphical shell after connection is established
         await graphical_shell(reader, writer, logger=logger, bell_macro=bell_macro)
