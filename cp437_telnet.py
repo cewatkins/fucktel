@@ -303,9 +303,10 @@ def parse_macro_keys(macro_text: str) -> list:
 
 async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None, bell_macro: Optional[str] = None):
     """Interactive shell with CP437 character support."""
-    print("Connected! Type Ctrl+] to quit.\n")
-    if bell_macro:
-        print("Bell macro available: Press Ctrl+G\n")
+    # Don't print anything - let the server's display be first
+    # print("Connected! Type Ctrl+] to quit.\n")
+    # if bell_macro:
+    #     print("Bell macro available: Press Ctrl+G\n")
     
     # Save original terminal settings
     if sys.stdin.isatty():
@@ -503,8 +504,18 @@ async def main(host: str, port: Optional[int] = 23, log_file: Optional[str] = No
         try:
             if hasattr(writer.protocol, 'request_naws'):
                 await writer.protocol.request_naws(cols, rows)
-            # Give server time to process size negotiation before we start reading
-            await asyncio.sleep(0.1)
+            # Give server time to process size negotiation
+            await asyncio.sleep(0.2)
+            
+            # Drain any buffered data that arrived before size negotiation
+            # This clears pre-negotiation content that might be misaligned
+            try:
+                while True:
+                    data = await asyncio.wait_for(reader.read(4096), timeout=0.05)
+                    if not data:
+                        break
+            except asyncio.TimeoutError:
+                pass  # Expected - no more data in buffer
         except Exception:
             pass
         
