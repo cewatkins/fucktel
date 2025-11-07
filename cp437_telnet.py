@@ -344,6 +344,18 @@ async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None
         if old_settings:
             tty.setraw(sys.stdin.fileno())
         
+        # Send terminal control codes to prevent scrolling issues
+        # ESC[?25h = Show cursor
+        # ESC[?1049h = Use alternate screen buffer (some terminals)
+        # ESC7 = Save cursor position
+        # ESC[r = Reset scroll region to full screen
+        try:
+            sys.stdout.write('\x1b[?25h')  # Show cursor
+            sys.stdout.write('\x1b[r')      # Reset scroll region
+            sys.stdout.flush()
+        except Exception:
+            pass
+        
         async def server_reader():
             """Continuously read and display server output."""
             nonlocal incomplete_seq
@@ -374,18 +386,6 @@ async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None
                     # Log to file if logger is active
                     if logger:
                         logger.log(decoded)
-                    
-                    # Detect screen control sequences that need synchronization delays
-                    # Only add delays for major screen updates, not every ANSI code
-                    has_clear = b'\x1b[2J' in data_bytes
-                    has_home = b'\x1b[H' in data_bytes or b'\x1b[0;0H' in data_bytes
-                    
-                    if has_clear or has_home:
-                        # Clear or home - wait for next data to arrive properly
-                        await asyncio.sleep(0.02)
-                    else:
-                        # Minimal delay for normal data flow
-                        await asyncio.sleep(0.0001)
             except asyncio.CancelledError:
                 pass
         
