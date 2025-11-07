@@ -23,15 +23,12 @@ import telnetlib3
 # Some servers send malformed TTYPE subnegotiations that cause AssertionErrors
 try:
     from telnetlib3.stream_writer import StreamWriter
-    _original_handle_sb_ttype = StreamWriter._handle_sb_ttype
     
+    # Replace the problematic TTYPE handler with a no-op
     def _patched_handle_sb_ttype(self, buf):
-        """Handle TTYPE subnegotiation without crashing."""
-        try:
-            if self.server:
-                self.send_subnegotiation(24, b"ANSI")  # TTYPE 24, type "ANSI"
-        except Exception:
-            pass  # Silently ignore TTYPE errors
+        """Handle TTYPE subnegotiation safely by doing nothing."""
+        # Don't process TTYPE at all - just ignore it
+        pass
     
     StreamWriter._handle_sb_ttype = _patched_handle_sb_ttype
 except Exception:
@@ -523,22 +520,30 @@ async def main(host: str, port: Optional[int] = 23, log_file: Optional[str] = No
             connect_minwait=0.0,  # Don't wait for telnet negotiation
         )
         
-        # Send terminal size IMMEDIATELY and wait a moment for negotiation
+        # Wait for telnet negotiation to settle
+        await asyncio.sleep(0.3)
+        
+        # Drain any buffered telnet negotiation data that shouldn't be displayed
+        # This prevents terminal detection sequences from shifting output
+        drained = b""
+        try:
+            while True:
+                data = await asyncio.wait_for(reader.read(4096), timeout=0.05)
+                if not data:
+                    break
+                if isinstance(data, str):
+                    drained += data.encode('latin-1', errors='replace')
+                else:
+                    drained += data
+        except asyncio.TimeoutError:
+            pass  # Expected - no more data in buffer
+        
+        # Send terminal size AFTER draining negotiation junk
         try:
             if hasattr(writer.protocol, 'request_naws'):
                 await writer.protocol.request_naws(cols, rows)
-            # Give server time to process size negotiation
-            await asyncio.sleep(0.2)
-            
-            # Drain any buffered data that arrived before size negotiation
-            # This clears pre-negotiation content that might be misaligned
-            try:
-                while True:
-                    data = await asyncio.wait_for(reader.read(4096), timeout=0.05)
-                    if not data:
-                        break
-            except asyncio.TimeoutError:
-                pass  # Expected - no more data in buffer
+            # Give server time to process size
+            await asyncio.sleep(0.1)
         except Exception:
             pass
         
