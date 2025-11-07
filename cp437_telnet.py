@@ -523,16 +523,18 @@ async def main(host: str, port: Optional[int] = 23, log_file: Optional[str] = No
         except Exception:
             pass
         
-        # Wait for server to process size and settle
-        await asyncio.sleep(0.2)
+        # Wait longer for server to process size and settle before we start displaying
+        await asyncio.sleep(0.8)
         
         # Drain any buffered data that arrived during negotiation
-        # Just do one quick drain to clear any junk
+        # This clears the initial screen junk so the first real content aligns properly
+        drained_count = 0
         try:
-            while True:
-                data = await asyncio.wait_for(reader.read(4096), timeout=0.05)
+            while drained_count < 10:  # Max 10 reads to prevent infinite loop
+                data = await asyncio.wait_for(reader.read(4096), timeout=0.1)
                 if not data:
                     break
+                drained_count += 1
         except asyncio.TimeoutError:
             pass  # Expected - no more data
         
