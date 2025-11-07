@@ -375,13 +375,23 @@ async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None
                     if logger:
                         logger.log(decoded)
                     
-                    # If we sent a clear screen (ESC[2J) or similar control, add small delay
-                    # to let server finish sending the next frame before we read again
-                    if b'\x1b[2J' in data_bytes or b'\x1b[H' in data_bytes or b'\x1b[0;0H' in data_bytes:
+                    # Detect screen control sequences that need synchronization delays
+                    # Check if data contains:
+                    # - Clear screen (ESC[2J)
+                    # - Home cursor (ESC[H or ESC[0;0H)
+                    # - Cursor positioning (ESC[<row>;<col>H) - indicates update to specific area
+                    has_clear = b'\x1b[2J' in data_bytes
+                    has_home = b'\x1b[H' in data_bytes or b'\x1b[0;0H' in data_bytes
+                    has_positioning = b'\x1b[' in data_bytes and b'H' in data_bytes
+                    
+                    if has_clear or has_home:
+                        # Clear or home - wait a bit longer for next data
                         await asyncio.sleep(0.05)
+                    elif has_positioning:
+                        # Cursor positioning detected - small wait to let related data arrive
+                        await asyncio.sleep(0.01)
                     else:
-                        # Small delay to allow more data to arrive in next read
-                        # This helps keep related lines together
+                        # Normal data - minimal wait
                         await asyncio.sleep(0.001)
             except asyncio.CancelledError:
                 pass
