@@ -466,7 +466,7 @@ async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None
             termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_settings)
 
 
-async def main(host: str, port: Optional[int] = 23, log_file: Optional[str] = None, bell_macro: Optional[str] = None, macro_delay: float = 0.01):
+async def main(host: str, port: Optional[int] = 23, log_file: Optional[str] = None, bell_macro: Optional[str] = None, macro_delay: float = 0.01, cols: int = 80, rows: int = 24):
     """Connect to telnet host and run graphical shell."""
     # Store macro_delay as a class attribute for use in graphical_shell
     graphical_shell.macro_delay = macro_delay
@@ -475,18 +475,27 @@ async def main(host: str, port: Optional[int] = 23, log_file: Optional[str] = No
     logger = SessionLogger(log_file) if log_file else None
     
     try:
+        # Get actual terminal size if available
+        try:
+            import shutil
+            term_size = shutil.get_terminal_size((cols, rows))
+            cols, rows = term_size.columns, term_size.lines
+        except Exception:
+            pass
+        
         reader, writer = await telnetlib3.open_connection(
             host,
             port,
             encoding='latin-1',  # 8-bit encoding
             force_binary=True,
-            shell=False,  # Disable shell mode
             connect_minwait=0.0,  # Don't wait for telnet negotiation
         )
         
-        # Request binary mode explicitly if available
+        # Force terminal size to server after connection
+        # Send NAWS (Negotiate About Window Size) telnet option
         try:
-            await writer.protocol.renegotiate() if hasattr(writer.protocol, 'renegotiate') else None
+            if hasattr(writer.protocol, 'request_naws'):
+                await writer.protocol.request_naws(cols, rows)
         except Exception:
             pass
         
@@ -520,6 +529,18 @@ if __name__ == "__main__":
         default=0.01,
         help="Delay between macro keystrokes in seconds (default: 0.01)"
     )
+    parser.add_argument(
+        "--cols",
+        type=int,
+        default=80,
+        help="Terminal width to send to server (default: 80)"
+    )
+    parser.add_argument(
+        "--rows",
+        type=int,
+        default=24,
+        help="Terminal height to send to server (default: 24)"
+    )
     
     args = parser.parse_args()
     
@@ -531,7 +552,7 @@ if __name__ == "__main__":
         log_file = f"session_{timestamp}.log"
     
     try:
-        asyncio.run(main(args.host, args.port, log_file=log_file, bell_macro=args.bell_macro, macro_delay=args.delay))
+        asyncio.run(main(args.host, args.port, log_file=log_file, bell_macro=args.bell_macro, macro_delay=args.delay, cols=args.cols, rows=args.rows))
     except KeyboardInterrupt:
         print("\nInterrupted by user.")
         sys.exit(0)
