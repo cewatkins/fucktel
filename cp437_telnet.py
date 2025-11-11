@@ -395,6 +395,19 @@ async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None
                 escape_char = "\x1d"  # Ctrl+]
                 bell_char = "\x07"    # Ctrl+G (BEL)
                 
+                # Common function key escape sequences
+                # Terminal sends ESC [ followed by a code or ESC O followed by a code
+                function_keys = {
+                    '2~': '\x1b[2~',   # INS (Insert)
+                    '3~': '\x1b[3~',   # DEL (Delete)
+                    '5~': '\x1b[5~',   # PAGEUP
+                    '6~': '\x1b[6~',   # PAGEDOWN
+                    '1~': '\x1b[1~',   # HOME
+                    '4~': '\x1b[4~',   # END
+                    'H': '\x1b[H',     # HOME (alternate)
+                    'F': '\x1b[F',     # END (alternate)
+                }
+                
                 while True:
                     # Read one character at a time
                     char = await loop.run_in_executor(None, sys.stdin.read, 1)
@@ -417,7 +430,7 @@ async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None
                             await asyncio.sleep(macro_delay)
                         if logger:
                             logger.log(f"[BELL MACRO]: {bell_macro}\n")
-                    # Handle escape sequences from terminal (arrow keys, etc.)
+                    # Handle escape sequences from terminal (arrow keys, function keys, etc.)
                     elif char == '\x1b':  # ESC - start of escape sequence
                         # Read the next characters of the sequence with a short timeout
                         seq = char
@@ -435,6 +448,7 @@ async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None
                                 # If it's CSI sequence (ESC[), read until terminator
                                 if next_char == '[':
                                     is_escape_sequence = True
+                                    # Read up to 10 more chars to handle sequences like ESC[24~
                                     for _ in range(10):
                                         term_char = await asyncio.wait_for(
                                             loop.run_in_executor(None, sys.stdin.read, 1),
@@ -444,10 +458,20 @@ async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None
                                             break
                                         seq += term_char
                                         # Check if this completes the sequence
-                                        if 0x40 <= ord(term_char) <= 0x7E:
+                                        # Terminators: letters (A-Z, a-z) or tilde (~) for function keys
+                                        if (0x40 <= ord(term_char) <= 0x7E) or term_char == '~':
                                             break
+                                # If it's SS3 sequence (ESC O), read one more char
+                                elif next_char == 'O':
+                                    is_escape_sequence = True
+                                    term_char = await asyncio.wait_for(
+                                        loop.run_in_executor(None, sys.stdin.read, 1),
+                                        timeout=0.05
+                                    )
+                                    if term_char:
+                                        seq += term_char
                                 else:
-                                    # Other escape sequences (ESC O, ESC (, etc.)
+                                    # Other escape sequences (ESC (, ESC ), etc.)
                                     is_escape_sequence = True
                         except asyncio.TimeoutError:
                             # Standalone ESC
