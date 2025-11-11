@@ -19,6 +19,33 @@ from typing import Optional, Dict
 
 import telnetlib3
 
+# Key mapping definitions for different terminal modes
+ANSI_KEY_MAP = {
+    # Escape sequence codes as received from terminal
+    # Format: escape_code -> sequence_to_send_to_server
+    '2~': '\x1b[2~',   # INS (Insert)
+    '3~': '\x1b[3~',   # DEL (Delete)
+    '5~': '\x1b[5~',   # PAGEUP
+    '6~': '\x1b[6~',   # PAGEDOWN
+    '1~': '\x1b[1~',   # HOME
+    '4~': '\x1b[4~',   # END
+    'H': '\x1b[H',     # HOME (alternate)
+    'F': '\x1b[F',     # END (alternate)
+}
+
+SYNCTERM_KEY_MAP = {
+    # SyncTerm key mappings - different from standard ANSI
+    # Format: escape_code -> sequence_to_send_to_server
+    '2~': '\x1b[@',    # INS (Insert) - SyncTerm uses ESC[@
+    '3~': '\x1b[3~',   # DEL (Delete) - same as ANSI
+    '5~': '\x1b[V',    # PAGEUP - SyncTerm uses ESC[V
+    '6~': '\x1b[U',    # PAGEDOWN - SyncTerm uses ESC[U
+    '1~': '\x1b[1~',   # HOME - same as ANSI
+    '4~': '\x1b[4~',   # END - same as ANSI
+    'H': '\x1b[H',     # HOME (alternate)
+    'F': '\x1b[F',     # END (alternate)
+}
+
 # Patch telnetlib3 TTYPE handler to prevent crashes on problematic servers
 # Some servers send malformed TTYPE subnegotiations that cause AssertionErrors
 try:
@@ -316,7 +343,7 @@ def parse_macro_keys(macro_text: str) -> list:
     return result
 
 
-async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None, bell_macro: Optional[str] = None):
+async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None, bell_macro: Optional[str] = None, key_map: Optional[Dict[str, str]] = None):
     """Interactive shell with CP437 character support."""
     # Don't print anything - let the server's display be first
     # print("Connected! Type Ctrl+] to quit.\n")
@@ -395,18 +422,22 @@ async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None
                 escape_char = "\x1d"  # Ctrl+]
                 bell_char = "\x07"    # Ctrl+G (BEL)
                 
-                # Common function key escape sequences
-                # Terminal sends ESC [ followed by a code or ESC O followed by a code
-                function_keys = {
-                    '2~': '\x1b[2~',   # INS (Insert)
-                    '3~': '\x1b[3~',   # DEL (Delete)
-                    '5~': '\x1b[5~',   # PAGEUP
-                    '6~': '\x1b[6~',   # PAGEDOWN
-                    '1~': '\x1b[1~',   # HOME
-                    '4~': '\x1b[4~',   # END
-                    'H': '\x1b[H',     # HOME (alternate)
-                    'F': '\x1b[F',     # END (alternate)
-                }
+                # Use provided key_map or default function keys
+                if key_map is None:
+                    # Common function key escape sequences
+                    # Terminal sends ESC [ followed by a code or ESC O followed by a code
+                    function_keys = {
+                        '2~': '\x1b[2~',   # INS (Insert)
+                        '3~': '\x1b[3~',   # DEL (Delete)
+                        '5~': '\x1b[5~',   # PAGEUP
+                        '6~': '\x1b[6~',   # PAGEDOWN
+                        '1~': '\x1b[1~',   # HOME
+                        '4~': '\x1b[4~',   # END
+                        'H': '\x1b[H',     # HOME (alternate)
+                        'F': '\x1b[F',     # END (alternate)
+                    }
+                else:
+                    function_keys = key_map
                 
                 while True:
                     # Read one character at a time
@@ -477,8 +508,25 @@ async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None
                             # Standalone ESC
                             is_escape_sequence = False
                         
-                        # Send the sequence (or standalone ESC) to the server
-                        writer.write(seq)
+                        # Try to remap the sequence using function_keys map
+                        # Extract the key code part of the sequence for lookup
+                        remapped_seq = seq
+                        if is_escape_sequence and seq.startswith('\x1b['):
+                            # CSI sequence - extract the key code (last char or number+char)
+                            # Format: ESC [ ... code (e.g., ESC [ 2 ~ for INSERT)
+                            if len(seq) > 2:
+                                # Get the ending of the sequence for lookup
+                                key_code = seq[2:]  # Everything after ESC[
+                                if key_code in function_keys:
+                                    remapped_seq = function_keys[key_code]
+                        elif is_escape_sequence and seq.startswith('\x1b'):
+                            # Other escape sequences
+                            key_code = seq[1:]  # Everything after ESC
+                            if key_code in function_keys:
+                                remapped_seq = function_keys[key_code]
+                        
+                        # Send the (possibly remapped) sequence to the server
+                        writer.write(remapped_seq)
                     else:
                         # Regular character - send to telnet server
                         writer.write(char)
@@ -521,7 +569,7 @@ async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None
             termios.tcsetattr(sys.stdin.fileno(), termios.TCSADRAIN, old_settings)
 
 
-async def main(host: str, port: Optional[int] = 23, log_file: Optional[str] = None, bell_macro: Optional[str] = None, macro_delay: float = 0.01, cols: int = 80, rows: int = 24):
+async def main(host: str, port: Optional[int] = 23, log_file: Optional[str] = None, bell_macro: Optional[str] = None, macro_delay: float = 0.01, cols: int = 80, rows: int = 24, key_map: Optional[Dict] = None):
     """Connect to telnet host and run graphical shell."""
     # Store macro_delay as a class attribute for use in graphical_shell
     graphical_shell.macro_delay = macro_delay
@@ -593,8 +641,12 @@ async def main(host: str, port: Optional[int] = 23, log_file: Optional[str] = No
         except Exception:
             pass
         
+        # Use default key map if none provided
+        if key_map is None:
+            key_map = ANSI_KEY_MAP
+        
         # Run the graphical shell after connection is established
-        await graphical_shell(reader, writer, logger=logger, bell_macro=bell_macro)
+        await graphical_shell(reader, writer, logger=logger, bell_macro=bell_macro, key_map=key_map)
         await writer.protocol.waiter_closed
     finally:
         if logger:
@@ -635,8 +687,27 @@ if __name__ == "__main__":
         default=24,
         help="Terminal height to send to server (default: 24)"
     )
+    parser.add_argument(
+        "--ansi",
+        action="store_true",
+        help="Use standard ANSI key mappings (default is SyncTerm)"
+    )
+    parser.add_argument(
+        "--syncterm",
+        action="store_true",
+        help="Use SyncTerm key mappings (default - PAGEUP/PAGEDOWN use ESC[V/U, INSERT uses ESC[@)"
+    )
     
     args = parser.parse_args()
+    
+    # Determine key map based on arguments
+    # Default to SYNCTERM (SyncTerm is the most compatible)
+    # Use --ansi flag to explicitly select ANSI mappings
+    if args.ansi:
+        key_map = ANSI_KEY_MAP
+    else:
+        # Default to SYNCTERM (--syncterm is optional since it's the default)
+        key_map = SYNCTERM_KEY_MAP
     
     # Generate log filename if --log specified without value
     log_file = args.log_file
@@ -646,7 +717,7 @@ if __name__ == "__main__":
         log_file = f"session_{timestamp}.log"
     
     try:
-        asyncio.run(main(args.host, args.port, log_file=log_file, bell_macro=args.bell_macro, macro_delay=args.delay, cols=args.cols, rows=args.rows))
+        asyncio.run(main(args.host, args.port, log_file=log_file, bell_macro=args.bell_macro, macro_delay=args.delay, cols=args.cols, rows=args.rows, key_map=key_map))
     except KeyboardInterrupt:
         print("\nInterrupted by user.")
         sys.exit(0)
