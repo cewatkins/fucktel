@@ -367,6 +367,17 @@ async def graphical_shell(reader, writer, logger: Optional[SessionLogger] = None
                     
                     # Decode CP437 - will return incomplete_seq if needed
                     decoded, incomplete_seq = decode_cp437_graphical_buffered(data_bytes)
+                    
+                    # CRITICAL FIX: When server sends ESC[2J (clear screen) without following
+                    # with ESC[H (home cursor), the cursor stays where it was.
+                    # Many BBS systems don't send the home cursor after clear, causing first
+                    # line to print on wrong line. We fix this by detecting ESC[2J and
+                    # ensuring cursor is moved to home.
+                    if '\x1b[2J' in decoded and '\x1b[H' not in decoded:
+                        # Server cleared screen but didn't move cursor to home
+                        # Add home cursor after clear
+                        decoded = decoded.replace('\x1b[2J', '\x1b[2J\x1b[H', 1)
+                    
                     sys.stdout.write(decoded)
                     # Force immediate flush after every write to prevent buffering issues
                     sys.stdout.flush()
