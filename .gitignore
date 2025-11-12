@@ -133,3 +133,4 @@ dmypy.json
 *.o
 fucktel
 examples_c
+test_cp437
