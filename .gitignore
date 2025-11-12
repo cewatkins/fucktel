@@ -5,6 +5,14 @@ __pycache__/
 
 # C extensions
 *.so
+*.o
+*.a
+*.out
+# C compiled binaries
+cp437_decode
+test_cp437
+examples_c
+fucktel
 
 # Distribution / packaging
 .Python
