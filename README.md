@@ -1,6 +1,10 @@
 # CP437 Telnet Client
 
-A Python telnet client that properly handles CP437 (Code Page 437) graphical characters, including low ASCII symbols that are typically lost in standard UTF-8 telnet connections.
+A telnet client that properly handles CP437 (Code Page 437) graphical characters, including low ASCII symbols that are typically lost in standard UTF-8 telnet connections.
+
+**Available in two implementations:**
+- **Python** - Feature-rich with session logging, macros, and advanced telnet support
+- **C** - Lightweight, fast, zero dependencies (see [README_C.md](README_C.md))
 
 ## Features
 
@@ -243,6 +247,8 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 - [Telnetlib3 Documentation](https://telnetlib3.readthedocs.io/)
 - [CP437 Wikipedia](https://en.wikipedia.org/wiki/Code_page_437)
 - [Unicode Character Database](https://www.unicode.org/unidata/)
+- [C Version Documentation](README_C.md)
+- [C Implementation Details](C_IMPLEMENTATION.md)
 
 ## Author
 
