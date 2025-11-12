@@ -128,3 +128,8 @@ dmypy.json
 
 # Project specific
 *.bak
+
+# C compiled files and build artifacts
+*.o
+fucktel
+examples_c
