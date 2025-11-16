@@ -6,10 +6,15 @@ A Python telnet client that properly handles CP437 (Code Page 437) graphical cha
 
 - ✅ Full CP437 graphical character support (including low ASCII 0x01-0x1F and 0x7F)
 - ✅ Proper Unicode mapping for all 256 CP437 characters
+- ✅ Complete ANSI/VT100 escape sequence support
 - ✅ Async/await based for non-blocking I/O
 - ✅ Built on `telnetlib3` for robust telnet protocol handling
 - ✅ Bidirectional encoding/decoding
 - ✅ Interactive terminal shell
+- ✅ **Compliant with historical ANSI rendering standards** (16colo.rs guidelines)
+- ✅ Customizable key mappings (ANSI, SyncTerm)
+- ✅ Session logging support
+- ✅ Macro support with configurable delays
 
 ## Supported Characters
 
@@ -54,14 +59,29 @@ pip install cp437-telnet
 
 ```bash
 # Connect to a telnet host with default port 23
-python3 cp437_telnet.py hostname
+python3 fucktel.py hostname
 
 # Connect to a custom port
-python3 cp437_telnet.py hostname 6666
+python3 fucktel.py hostname 6666
+
+# With session logging
+python3 fucktel.py hostname 23 --log session.log
+
+# With SyncTerm key mappings (default)
+python3 fucktel.py hostname 23 --syncterm
+
+# With ANSI key mappings
+python3 fucktel.py hostname 23 --ansi
+
+# With macro support (Ctrl+G sends commands, use hjkl for arrows)
+python3 fucktel.py hostname 23 --bell "vjkl"
+
+# Custom terminal dimensions
+python3 fucktel.py hostname 23 --cols 120 --rows 40
 
 # Or use the installed command
-cp437-telnet hostname
-cp437-telnet hostname 6666
+fucktel hostname
+fucktel hostname 6666
 ```
 
 ### Example
@@ -149,19 +169,58 @@ mypy cp437_telnet.py
 black --check cp437_telnet.py tests/ && flake8 cp437_telnet.py tests/ && mypy cp437_telnet.py
 ```
 
+## ANSI Rendering Compliance
+
+This client fully complies with proper ANSI rendering standards as outlined in the [16colo.rs guide on ANSI rendering](https://16colo.rs). Key compliance points:
+
+### ✅ What We Handle Correctly
+
+- **CP437 Codepage**: Full support for IBM PC Code Page 437 (standard for classic BBS ANSI art)
+- **Binary 8-bit Clean**: Uses `force_binary=True` to preserve CP437 bytes without telnet protocol interference
+- **ANSI Escape Sequences**: Complete support for:
+  - CSI sequences (colors, cursor movement, screen operations)
+  - OSC sequences (operating system commands)
+  - Character set selection (line drawing modes)
+  - Cursor save/restore
+  - Relative and absolute positioning
+  - Screen clearing and line operations
+- **Sequence Buffering**: Properly handles incomplete ANSI sequences split across TCP packets
+- **Robustness**: Auto-fixes common server bugs (e.g., clear without home cursor)
+
+### ⚠️ Important Limitations (By Design)
+
+- **Pixel Aspect Ratio**: CRT hardware used 35% taller pixels than modern LCD displays
+  - Pre-2000 art may appear "squashed"
+  - **Solution**: Use terminal fonts designed for retro BBS or research artwork date
+- **Character Spacing**: Classic hardware had 9-pixel spacing; modern terminals use 8-pixel
+  - Line-drawing characters may have gaps
+  - **Solution**: Use fonts like "Perfect DOS VGA 437" or "Terminus"
+- **Multiple Codepages**: Only CP437 is fully supported (CP850, etc. not implemented)
+  - **Workaround**: Most classic art uses CP437
+
+### 📚 Documentation
+
+See the following for detailed compliance information:
+- **[ANSI_RENDERING_COMPLIANCE.md](./ANSI_RENDERING_COMPLIANCE.md)** - Comprehensive compliance documentation
+- **[ANSI_COMPLIANCE_QUICK_REFERENCE.md](./ANSI_COMPLIANCE_QUICK_REFERENCE.md)** - Quick reference and troubleshooting
+
 ## Project Structure
 
 ```
-cp437-telnet/
-├── cp437_telnet.py          # Main module
+fucktel/
+├── fucktel.py                              # Main module
 ├── tests/
 │   ├── __init__.py
-│   └── test_cp437.py        # Unit tests
-├── requirements.txt         # Python dependencies
-├── setup.py                 # Package configuration
-├── .gitignore              # Git ignore rules
-├── README.md               # This file
-└── LICENSE                 # MIT License
+│   ├── test_cp437.py                       # CP437 encoding/decoding tests
+│   └── test_ansi_extended.py               # ANSI sequence tests
+├── ANSI_RENDERING_COMPLIANCE.md            # Comprehensive compliance documentation
+├── ANSI_COMPLIANCE_QUICK_REFERENCE.md      # Quick reference guide
+├── ANSI_ANALYSIS.md                        # Implementation analysis
+├── requirements.txt                        # Python dependencies
+├── setup.py                                # Package configuration
+├── .gitignore                              # Git ignore rules
+├── README.md                               # This file
+└── LICENSE                                 # MIT License
 ```
 
 ## CP437 Character Mapping
@@ -223,17 +282,45 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 ## Troubleshooting
 
-### Connection refused
+### ANSI/Rendering Issues
+
+**Art looks "squashed" vertically**
+- This is expected for pre-2000 artwork on modern monitors (CRT vs LCD pixel aspect)
+- Research the artwork's creation date (check SAUCE metadata)
+- Try terminal fonts with non-square pixel ratios
+
+**Line-drawing characters have gaps**
+- Modern terminals use 8-pixel character width; classic hardware used 9-pixel
+- Try retro-designed terminal fonts like "Perfect DOS VGA 437"
+
+**Colors don't work**
+- Set terminal to support 256 colors minimum (or 24-bit RGB preferred)
+- Some BBS systems require manual color configuration
+
+**First line of text appears at wrong position after clear**
+- This is a known server bug; fucktel auto-fixes it
+- If still occurring, try a different BBS
+
+### Connection Issues
+
+**Connection refused**
 - Verify the host and port are correct
 - Ensure the telnet service is running on the target
 - Check firewall rules
 
-### Characters display incorrectly
+**Characters display incorrectly**
 - Verify your terminal supports Unicode (UTF-8)
 - Try a different terminal emulator
 - Ensure your terminal font includes the required Unicode characters
+- Check if BBS uses CP850 or other codepage (fucktel uses CP437)
 
-### Encoding errors
+**Keys don't work**
+- Try `--ansi` or `--syncterm` key mapping modes
+- Some BBS systems use different escape sequences
+- Use `--bell` macro feature for common navigation patterns
+
+### Encoding Errors
+
 - Input characters may not have a CP437 equivalent
 - The client will fall back to the closest latin-1 equivalent
 - Safe fallback to '?' for unmapped characters
